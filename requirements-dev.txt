@@ -1,0 +1,4 @@
+# Tout installer pour travailler en local : pip install -r requirements-dev.txt
+-r requirements.txt
+-r frontend/requirements.txt
+pytest>=8.0

@@ -1,0 +1,42 @@
+# Planificateur gratuit : GitHub lance ce travail toutes les 15 minutes et envoie les alertes dues.
+# Dépôt PUBLIC recommandé : les minutes d'exécution sont alors illimitées et gratuites.
+# Les clés ne sont jamais dans le code : Settings → Secrets and variables → Actions.
+name: Envoi des alertes
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:        # bouton « Run workflow » pour tester à la main
+
+concurrency:
+  group: envoi-alertes
+  cancel-in-progress: false
+
+jobs:
+  run-due:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Traiter les alertes dues
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          COPERNICUS_USERNAME: ${{ secrets.COPERNICUS_USERNAME }}
+          COPERNICUS_PASSWORD: ${{ secrets.COPERNICUS_PASSWORD }}
+          PUBLIC_BACKEND_URL: ${{ secrets.PUBLIC_BACKEND_URL }}
+          FRONTEND_URL: ${{ secrets.FRONTEND_URL }}
+        run: flask --app backend.app run-due
+      # Garde l'API gratuite éveillée (Render l'endort après 15 min sans visite)
+      - name: Réveiller l'API
+        env:
+          PUBLIC_BACKEND_URL: ${{ secrets.PUBLIC_BACKEND_URL }}
+        run: |
+          if [ -n "$PUBLIC_BACKEND_URL" ]; then curl -s -m 60 -o /dev/null "$PUBLIC_BACKEND_URL/health" || true; fi

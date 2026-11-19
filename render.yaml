@@ -1,0 +1,29 @@
+# API Flask gratuite sur Render (Blueprint). Les valeurs « sync: false » se saisissent dans le tableau de bord.
+services:
+  - type: web
+    name: plongee-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -b 0.0.0.0:$PORT -w 1 --timeout 120 backend.app:app
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL
+        sync: false
+      - key: PUBLIC_BACKEND_URL
+        sync: false          # l'adresse de ce service : https://plongee-api.onrender.com
+      - key: FRONTEND_URL
+        sync: false          # l'adresse du site Streamlit
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: COPERNICUS_USERNAME
+        sync: false
+      - key: COPERNICUS_PASSWORD
+        sync: false

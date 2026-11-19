@@ -1,0 +1,100 @@
+{%- macro fr(x) -%}{{ (x|string)|replace('.', ',') }}{%- endmacro -%}
+{%- macro rng(lo, hi, unit) -%}{% if lo is none or hi is none %}—{% elif lo == hi %}{{ fr(lo) }} {{ unit }}{% else %}{{ fr(lo) }}–{{ fr(hi) }} {{ unit }}{% endif %}{%- endmacro -%}
+{%- set tones = {'ok': ('#e8f5ee', '#1a7f4b'), 'warn': ('#fdf3e1', '#b7791f'), 'bad': ('#fbe9e7', '#c0392b')} -%}
+{%- set d0 = report.days[0] -%}
+{%- set has_vis = report.days | selectattr('visibility') | list | length > 0 -%}
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{{ text.subject }}</title></head>
+<body style="margin:0;padding:0;background:#f2f5f7;font-family:Arial,Helvetica,sans-serif;color:#1d2b36;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f2f5f7;padding:16px 0;">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:8px;">
+
+  <!-- En-tête : spot, verdict en mots, fiabilité en une phrase -->
+  <tr><td style="padding:24px 24px 8px 24px;">
+    <div style="font-size:13px;color:#5b6b78;">{{ report.spot }} · {{ d0.date_fr }}</div>
+    {% if d0.reliability %}
+    {% set bg, fg = tones[d0.reliability.tone] %}
+    <div style="font-size:24px;font-weight:bold;margin:8px 0 12px 0;color:{{ fg }};">{{ d0.verdict }}</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+      <td style="background:{{ bg }};border-left:4px solid {{ fg }};border-radius:4px;padding:10px 12px;font-size:14px;line-height:1.4;">
+        <strong style="color:{{ fg }};">{{ d0.reliability.icon }} {{ d0.reliability.headline }}.</strong>
+        {{ d0.reliability.advice }}
+        {% if d0.summary.wave_height.min is not none and d0.agreement != 'inconnu' %}
+        <div style="font-size:12px;color:#5b6b78;margin-top:4px;">Selon les instituts : vagues {{ rng(d0.summary.wave_height.min, d0.summary.wave_height.max, 'm') }}{% if d0.summary.wind_speed.min is not none %}, vent {{ rng(d0.summary.wind_speed.min|int, d0.summary.wind_speed.max|int, 'nœuds') }}{% endif %}.</div>
+        {% endif %}
+      </td>
+    </tr></table>
+    {% if d0.best_window %}<div style="font-size:14px;color:#5b6b78;margin-top:10px;">Meilleur créneau : <strong style="color:#1d2b36;">{{ d0.best_window.start }}–{{ d0.best_window.end }}</strong></div>{% endif %}
+    {% endif %}
+  </td></tr>
+
+  <!-- Courte description -->
+  <tr><td style="padding:8px 24px;font-size:15px;line-height:1.5;">
+    <p style="margin:8px 0;"><strong>{{ text.intro }}</strong></p>
+    {% for p in text.paragraphs %}<p style="margin:8px 0;">{{ p }}</p>{% endfor %}
+  </td></tr>
+
+  <!-- Tableau 1 : les trois jours côte à côte -->
+  <tr><td style="padding:8px 24px;">
+    <div style="font-size:13px;margin:4px 0 6px 0;"><strong>Prévisions des {{ report.days|length }} jours</strong></div>
+    <table role="presentation" width="100%" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:12px;border:1px solid #dde4ea;">
+      <tr style="background:#eef3f7;text-align:left;vertical-align:top;">
+        <th style="width:23%;"></th>
+        {% for day in report.days %}<th>{{ day.label }}<br><span style="font-weight:normal;color:#7a8a96;">{{ day.date_fr }}</span></th>{% endfor %}
+      </tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Conditions</strong></td>
+        {% for day in report.days %}<td>{% if day.verdict %}{{ day.verdict }}{% else %}<span style="color:#7a8a96;">{{ day.note or '—' }}</span>{% endif %}</td>{% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Fiabilité</strong></td>
+        {% for day in report.days %}
+        {% if day.reliability %}{% set fg = tones[day.reliability.tone][1] %}<td style="color:{{ fg }};">{{ day.reliability.icon }} {{ day.reliability.short }}</td>{% else %}<td>—</td>{% endif %}
+        {% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Créneau</strong></td>
+        {% for day in report.days %}<td>{% if day.best_window %}{{ day.best_window.start }}–{{ day.best_window.end }}{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Vagues</strong></td>
+        {% for day in report.days %}<td>{% if day.best_window %}{{ rng(day.summary.wave_height.min, day.summary.wave_height.max, 'm') }}{% if day.summary.wave_period.median %}<br><span style="color:#7a8a96;">période {{ day.summary.wave_period.median|int }} s</span>{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Vent</strong></td>
+        {% for day in report.days %}<td>{% if day.best_window and day.summary.wind_speed.min is not none %}{{ rng(day.summary.wind_speed.min|int, day.summary.wind_speed.max|int, 'nœuds') }}{% if day.summary.wind_from %}<br><span style="color:#7a8a96;">{{ day.summary.wind_from }}{% if day.summary.wind_gusts.median %}, rafales {{ day.summary.wind_gusts.median|int }} nœuds{% endif %}</span>{% endif %}{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Courant</strong></td>
+        {% for day in report.days %}<td>{% if day.current_kn is not none %}~{{ fr(day.current_kn) }} nœud{% else %}—{% endif %}</td>{% endfor %}</tr>
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Eau</strong></td>
+        {% for day in report.days %}<td>{% if day.water_temp is not none %}{{ fr(day.water_temp) }} °C{% else %}—{% endif %}</td>{% endfor %}</tr>
+      {% if has_vis %}
+      <tr style="border-top:1px solid #dde4ea;vertical-align:top;"><td><strong>Visibilité</strong><br><span style="color:#7a8a96;">estimée</span></td>
+        {% for day in report.days %}<td>{% if day.visibility and day.visibility.range %}{{ day.visibility.level|capitalize }}<br><span style="color:#7a8a96;">{{ day.visibility.range }}</span>{% else %}—{% endif %}</td>{% endfor %}</tr>
+      {% endif %}
+    </table>
+    <div style="font-size:11px;color:#7a8a96;margin-top:4px;">Chiffres calculés sur le meilleur créneau de chaque jour (plage = du modèle le plus bas au plus haut). Courant : un seul modèle, indicatif.{% if has_vis %} Visibilité : estimation à partir de Copernicus Marine, à confirmer sur place.{% endif %}</div>
+  </td></tr>
+
+  <!-- Tableau 2 : ce que dit chaque institut, jour par jour -->
+  {% for day in report.days if day.per_model %}
+  <tr><td style="padding:8px 24px;">
+    <div style="font-size:13px;margin:4px 0;"><strong>Ce que dit chaque institut · {{ day.label|lower }} à {{ day.per_model.time }}</strong></div>
+    <table role="presentation" width="100%" cellpadding="5" cellspacing="0" style="border-collapse:collapse;font-size:12px;">
+      <tr style="background:#eef3f7;text-align:left;"><th>Institut</th><th>Vagues</th><th>Période</th><th>Vent</th></tr>
+      {% for r in day.per_model.rows %}
+      <tr style="border-top:1px solid #dde4ea;">
+        <td>{{ r.provider }}<br><span style="color:#7a8a96;font-size:11px;">{{ r.models }}</span></td>
+        <td>{{ (fr(r.wave_height) ~ ' m') if r.wave_height is not none else '—' }}</td>
+        <td>{{ '%d s'|format(r.wave_period) if r.wave_period is not none else '—' }}</td>
+        <td>{{ '%d nœuds'|format(r.wind_speed) if r.wind_speed is not none else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </td></tr>
+  {% endfor %}
+
+  <tr><td style="padding:16px 24px 24px 24px;font-size:11px;color:#7a8a96;line-height:1.5;">
+    <a href="{{ links.report }}" style="color:#1f6fb2;">Voir sur le site</a> ·
+    <a href="{{ links.manage }}" style="color:#1f6fb2;">Modifier mes alertes</a> ·
+    <a href="{{ links.unsubscribe }}" style="color:#1f6fb2;">Arrêter cette alerte</a><br>
+    Données : Open-Meteo.com, Météo-France, ECMWF, NOAA, DWD, Copernicus Marine (CC BY 4.0).
+    {% if text.source not in ['gabarit'] %}Texte rédigé automatiquement par IA à partir de ces données.{% endif %}<br>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>

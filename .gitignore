@@ -1,0 +1,20 @@
+# Secrets : ne jamais les mettre dans git
+.env
+.streamlit/secrets.toml
+
+# Environnements et caches Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Données locales et mails de test
+data/
+outbox/
+exemple_mail.html
+
+# Éditeurs et système
+.idea/
+.vscode/
+.DS_Store

@@ -1,11 +1,11 @@
-# Planificateur gratuit : GitHub lance ce travail toutes les 15 minutes et envoie les alertes dues.
+# Planificateur gratuit : GitHub lance ce travail toutes les 5 minutes et envoie les alertes dues.
 # Dépôt PUBLIC recommandé : les minutes d'exécution sont alors illimitées et gratuites.
 # Les clés ne sont jamais dans le code : Settings → Secrets and variables → Actions.
 name: Envoi des alertes
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:        # bouton « Run workflow » pour tester à la main
 
 concurrency:

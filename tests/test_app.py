@@ -161,7 +161,7 @@ def test_all_calls_share_the_spot_timezone(monkeypatch):
     bundle = openmeteo.fetch_all(35.85, -5.35)
     assert bundle["timezone"] == TZ
     assert seen[0] == "auto"                      # seul l'appel qui trouve le fuseau
-    assert set(seen[1:]) == {TZ} and len(seen) > 5
+    assert set(seen[1:]) == {TZ} and len(seen) == 5   # fuseau + vagues + vent + courant + SST
 
 
 def test_brevo_api_is_used_when_key_set(monkeypatch):

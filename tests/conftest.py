@@ -44,6 +44,14 @@ def fake_times():
 
 
 def fake_http_get(url, params, retries=3):
+    models = (params.get("models") or "").split(",")
+    if len(models) > 1:   # appel groupé : Open-Meteo renvoie des clés suffixées « variable_modèle »
+        merged = {}
+        for m in models:
+            single = fake_http_get(url, {**params, "models": m}, retries)
+            merged.update({"time": single["hourly"]["time"]})
+            merged.update({f"{k}_{m}": v for k, v in single["hourly"].items() if k != "time"})
+        return {"timezone": TZ, "hourly": merged}
     times = fake_times()
     n = len(times)
     model = params.get("models")

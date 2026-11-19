@@ -1,7 +1,7 @@
 {%- macro fr(x) -%}{{ (x|string)|replace('.', ',') }}{%- endmacro -%}
 {%- macro rng(lo, hi, unit) -%}{% if lo is none or hi is none %}—{% elif lo == hi %}{{ fr(lo) }} {{ unit }}{% else %}{{ fr(lo) }}–{{ fr(hi) }} {{ unit }}{% endif %}{%- endmacro -%}
 {%- set tones = {'ok': ('#e8f5ee', '#1a7f4b'), 'warn': ('#fdf3e1', '#b7791f'), 'bad': ('#fbe9e7', '#c0392b')} -%}
-{%- set d0 = report.days[0] -%}
+{%- set d0 = (report.days | selectattr('reliability') | list | first) or report.days[0] -%}
 {%- set has_vis = report.days | selectattr('visibility') | list | length > 0 -%}
 <!DOCTYPE html>
 <html lang="fr">
@@ -13,7 +13,7 @@
 
   <!-- En-tête : spot, verdict en mots, fiabilité en une phrase -->
   <tr><td style="padding:24px 24px 8px 24px;">
-    <div style="font-size:13px;color:#5b6b78;">{{ report.spot }} · {{ d0.date_fr }}</div>
+    <div style="font-size:13px;color:#5b6b78;">{{ report.spot }} · {{ d0.label }} {{ d0.date_fr }}</div>
     {% if d0.reliability %}
     {% set bg, fg = tones[d0.reliability.tone] %}
     <div style="font-size:24px;font-weight:bold;margin:8px 0 12px 0;color:{{ fg }};">{{ d0.verdict }}</div>

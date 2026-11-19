@@ -26,8 +26,8 @@ Règles :
 Réponds uniquement par un objet JSON de la forme :
 {"subject": "...", "intro": "...", "paragraphs": ["..."]}
 - subject : 70 caractères maximum : spot, jour, verdict en mots et si les modèles sont d'accord. Aucun chiffre de score.
-- intro : UNE phrase : verdict d'aujourd'hui et accord des modèles.
-- paragraphs : 1 ou 2 paragraphes de 2 phrases maximum : aujourd'hui (meilleur créneau, l'essentiel de la mer et du vent), puis une phrase sur demain et après-demain."""
+- intro : UNE phrase : verdict du premier jour avec données (champ premier_jour_avec_donnees) et accord des modèles. Si ce n'est pas aujourd'hui, dis que la journée de plongée d'aujourd'hui est terminée.
+- paragraphs : 1 ou 2 paragraphes de 2 phrases maximum : ce premier jour (meilleur créneau, l'essentiel de la mer et du vent), puis une phrase sur les jours suivants."""
 
 NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
 
@@ -41,6 +41,11 @@ def _fmt(value, unit: str = "") -> str:
 
 def _hour(hhmm: str) -> str:
     return f"{int(hhmm[:2])}h"
+
+
+def _lead_day(report: dict) -> dict | None:
+    """Premier jour qui a des données : aujourd'hui, ou demain une fois la journée de plongée terminée."""
+    return next((d for d in report["days"] if d["score"] is not None), None)
 
 
 def build_facts(report: dict) -> dict:
@@ -65,8 +70,10 @@ def build_facts(report: dict) -> dict:
             "visibilite_estimee": (f"{day['visibility']['level']} ({day['visibility']['range']})"
                                    if day.get("visibility") and day["visibility"].get("range") else None),
         })
+    lead = _lead_day(report)
     return {
         "spot": report.get("spot") or "ton spot",
+        "premier_jour_avec_donnees": lead["label"] if lead else None,
         "modeles_vagues": report["models"]["waves"],
         "modeles_vent": report["models"]["wind"],
         "jours": jours,
@@ -136,11 +143,12 @@ def template_text(report: dict) -> dict:
     """Texte sans LLM : bref, toujours disponible, ne peut pas inventer de chiffre."""
     spot = report.get("spot") or "Ton spot"
     days = report["days"]
-    today = days[0]
-    if today["score"] is None:
-        return {"subject": f"{spot} — {today['date_fr']} : prévisions indisponibles",
-                "intro": "Les modèles n'ont pas renvoyé assez de données aujourd'hui.",
+    today = _lead_day(report)
+    if today is None:
+        return {"subject": f"{spot} — {days[0]['date_fr']} : prévisions indisponibles",
+                "intro": "Les modèles n'ont pas renvoyé assez de données.",
                 "paragraphs": [], "source": "gabarit"}
+    is_today = today is days[0]
 
     def accord(a):
         return {"élevé": "les modèles sont d'accord", "moyen": "les modèles divergent un peu",
@@ -150,6 +158,8 @@ def template_text(report: dict) -> dict:
     s, w = today["summary"], today["best_window"]
     hs, ws = s["wave_height"], s["wind_speed"]
     parts = [f"Meilleur créneau {_hour(w['start'])}–{_hour(w['end'])}."]
+    if not is_today:
+        parts[0] = f"{today['label']}, meilleur créneau {_hour(w['start'])}–{_hour(w['end'])}."
     if hs["median"] is not None:
         parts.append(f"Mer à {_fmt(hs['median'], 'm')}"
                      + (f", vent de {_fmt(ws['median'], 'nœuds')}" + (f" {s['wind_from']}" if s["wind_from"] else "")
@@ -160,7 +170,7 @@ def template_text(report: dict) -> dict:
     paragraphs = [" ".join(parts)]
 
     suite = []
-    for day in days[1:]:
+    for day in days[days.index(today) + 1:]:
         if day["score"] is None:
             suite.append(f"{day['label']} : pas assez de données.")
         else:
@@ -170,7 +180,9 @@ def template_text(report: dict) -> dict:
 
     return {
         "subject": f"{spot} — {today['date_fr']} : {today['verdict'].lower()}, {accord(today['agreement'])}",
-        "intro": f"{today['verdict']} aujourd'hui : {accord(today['agreement'])}.",
+        "intro": (f"{today['verdict']} aujourd'hui : {accord(today['agreement'])}." if is_today else
+                  f"La journée de plongée d'aujourd'hui est terminée. {today['label']} : "
+                  f"{today['verdict'].lower()}, {accord(today['agreement'])}."),
         "paragraphs": paragraphs,
         "source": "gabarit",
     }

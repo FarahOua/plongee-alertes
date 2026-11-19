@@ -45,7 +45,12 @@ def _http_get(url: str, params: dict, retries: int = 3) -> dict:
             if resp.status_code == 400:  # modèle ou variable inconnus : inutile de réessayer
                 raise OpenMeteoBadRequest(resp.json().get("reason", resp.text))
             if resp.status_code == 429:  # limite par adresse IP (fréquent sur les hébergeurs partagés)
-                last_error = "429 Trop de requêtes : limite d'Open-Meteo atteinte pour cette adresse IP"
+                try:
+                    reason = resp.json().get("reason", "")
+                except ValueError:
+                    reason = resp.text[:120]
+                last_error = ("429 Trop de requêtes : limite d'Open-Meteo atteinte pour cette adresse IP"
+                              + (f" ({reason})" if reason else ""))
                 try:
                     wait = min(int(resp.headers.get("Retry-After", wait * 2)), 10)
                 except ValueError:

@@ -83,9 +83,9 @@ LLM_PROVIDERS = [
         "name": "gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
         "api_key": env("GEMINI_API_KEY"),
-        "model": env("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+        "model": env("GEMINI_MODEL", "gemini-3.5-flash-lite"),
         # Essayés dans l'ordre si le modèle principal est surchargé (503) ou saturé (429)
-        "fallback_models": [m.strip() for m in env("GEMINI_FALLBACK_MODELS", "gemini-2.5-flash").split(",") if m.strip()],
+        "fallback_models": [m.strip() for m in env("GEMINI_FALLBACK_MODELS", "gemini-flash-lite-latest,gemini-flash-latest").split(",") if m.strip()],
     },
 ]
 

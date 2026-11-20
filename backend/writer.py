@@ -5,6 +5,7 @@ d'autres. Un contrôle automatique rejette tout texte contenant un nombre absent
 des données ; on retombe alors sur le gabarit.
 """
 import json
+import time
 import logging
 import re
 
@@ -118,15 +119,18 @@ def _parse_json(content: str) -> dict:
     return data
 
 
-LLM_TIMEOUT = 60  # secondes
+LLM_TIMEOUT = 60        # secondes, modèle principal
+FALLBACK_TIMEOUT = 30   # secondes, modèles de secours
+RETRY_STATUS = (429, 500, 502, 503, 504)   # surcharge côté fournisseur : on réessaie / on change de modèle
 
 
-def _call_llm(provider: dict, facts: dict) -> dict:
+def _call_model(provider: dict, model: str, facts: dict, timeout: int) -> dict:
     body = {
-        "model": provider["model"],
-        "temperature": 0.3,
+        "model": model,
         "max_tokens": 2000,   # large : les modèles « réflexion » dépensent des jetons avant de répondre
         "response_format": {"type": "json_object"},
+        # effort de réflexion bas : sinon les modèles Gemini « réflexion » mettent plus de 40 s
+        "reasoning_effort": "low",
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(facts, ensure_ascii=False)},
@@ -134,15 +138,29 @@ def _call_llm(provider: dict, facts: dict) -> dict:
     }
     url = f"{provider['base_url']}/chat/completions"
     headers = {"Authorization": f"Bearer {provider['api_key']}"}
-    # « reasoning_effort » bas : les modèles Gemini « réflexion » mettent sinon plus de 40 s à répondre
-    body["reasoning_effort"] = "low"
-    resp = requests.post(url, headers=headers, json=body, timeout=LLM_TIMEOUT)
+    resp = requests.post(url, headers=headers, json=body, timeout=timeout)
     if resp.status_code == 400:  # option refusée (mode JSON, effort de réflexion) : on retente sans
         body.pop("response_format", None)
         body.pop("reasoning_effort", None)
-        resp = requests.post(url, headers=headers, json=body, timeout=LLM_TIMEOUT)
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
+    if resp.status_code in RETRY_STATUS:  # un seul nouvel essai après une courte pause
+        time.sleep(3)
+        resp = requests.post(url, headers=headers, json=body, timeout=timeout)
     resp.raise_for_status()
     return _parse_json(resp.json()["choices"][0]["message"]["content"])
+
+
+def _call_llm(provider: dict, facts: dict) -> dict:
+    """Modèle principal, puis les modèles de secours si le principal est surchargé ou trop lent."""
+    models = [provider["model"], *provider.get("fallback_models", [])]
+    last_exc = None
+    for i, model in enumerate(dict.fromkeys(models)):   # sans doublons, ordre conservé
+        try:
+            return _call_model(provider, model, facts, LLM_TIMEOUT if i == 0 else FALLBACK_TIMEOUT)
+        except Exception as exc:
+            last_exc = exc
+            log.warning("LLM %s/%s indisponible : %s", provider["name"], model, exc)
+    raise last_exc
 
 
 def template_text(report: dict) -> dict:

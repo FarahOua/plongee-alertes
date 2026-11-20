@@ -87,6 +87,15 @@ def test_full_flow(client, monkeypatch):
     assert run_due() == []                                   # en pause : rien
     client.patch(f"/subscriptions/{sub['id']}", json={"status": "active", "send_time": "00:00"}, headers=headers)
 
+    # Changer le planning efface « déjà envoyé » ; une valeur identique ne le fait pas
+    with __import__("backend.db", fromlist=["get_db"]).get_db() as conn:
+        conn.execute("UPDATE subscriptions SET last_sent_on = ? WHERE id = ?", (local_today.isoformat(), sub["id"]))
+    same = client.patch(f"/subscriptions/{sub['id']}", json={"send_time": "00:00"}, headers=headers).get_json()
+    assert same["last_sent_on"] == local_today.isoformat()
+    changed = client.patch(f"/subscriptions/{sub['id']}", json={"send_time": "00:01"}, headers=headers).get_json()
+    assert changed["last_sent_on"] is None
+    client.patch(f"/subscriptions/{sub['id']}", json={"send_time": "00:00"}, headers=headers)
+
     # Envoi programmé : une seule fois par jour
     results = run_due()
     assert [r["status"] for r in results] == ["sent"]

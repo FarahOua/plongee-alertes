@@ -173,6 +173,11 @@ def create_app() -> Flask:
             data["timezone"] = openmeteo.resolve_timezone(data["lat"], data["lon"])
         if data.get("status") == "active" and sub["status"] == "ended":
             raise ValueError("Alerte terminée : crée une nouvelle alerte.")
+        # Si le planning change (heure, dates, lieu), l'alerte doit pouvoir repartir aujourd'hui :
+        # on efface « déjà envoyé aujourd'hui ». Une valeur identique ou une simple pause ne compte pas.
+        if any(k in data and data[k] != sub[k]
+               for k in ("send_time", "start_date", "end_date", "lat", "lon")):
+            data["last_sent_on"] = None
         if data:
             sets = ", ".join(f"{k} = ?" for k in data)
             with get_db() as conn:

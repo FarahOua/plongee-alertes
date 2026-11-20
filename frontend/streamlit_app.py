@@ -42,6 +42,7 @@ def api(method: str, path: str, **kwargs):
         return None
     if resp.status_code == 401:
         state.token = None
+        st.query_params.pop("s", None)
         st.warning("Session expirée : reconnecte-toi.")
         return None
     if not resp.ok:
@@ -53,13 +54,26 @@ def api(method: str, path: str, **kwargs):
     return resp.json()
 
 
+# Recharger la page crée une nouvelle session Streamlit : la mémoire est vide. Le jeton de connexion
+# est donc aussi gardé dans l'adresse de la page (?s=…) et relu ici. Ne partage pas cette adresse
+# une fois connecté ; « Se déconnecter » la nettoie.
+if not state.token and st.query_params.get("s"):
+    state.token = st.query_params["s"]
+    me = api("get", "/me")
+    if me:
+        state.email = me.get("email")
+    elif state.token is None:       # jeton refusé (api() l'a déjà effacé)
+        st.query_params.pop("s", None)
+
+
 # --- Connexion (barre latérale) ----------------------------------------------------
 with st.sidebar:
     st.header("Mon compte")
     if state.token:
-        st.success(f"Connecté : {state.email}")
+        st.success(f"Connecté : {state.email or 'ton compte'}")
         if st.button("Se déconnecter"):
             state.token = state.email = state.code_sent_to = None
+            st.query_params.pop("s", None)
             st.rerun()
     else:
         email = st.text_input("Adresse mail", value=state.code_sent_to or "")
@@ -72,6 +86,7 @@ with st.sidebar:
                 data = api("post", "/auth/verify", json={"email": state.code_sent_to, "code": code})
                 if data:
                     state.token, state.email = data["token"], data["email"]
+                    st.query_params["s"] = state.token
                     st.rerun()
     st.divider()
     st.caption("Prévisions : Open-Meteo, Météo-France, ECMWF, NOAA, DWD, Copernicus Marine. ")

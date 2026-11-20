@@ -20,9 +20,9 @@ AGREEMENT_ICONS = {"élevé": "🟢", "moyen": "🟠", "faible": "🔴", "inconn
 
 st.set_page_config(page_title="Alertes plongée", page_icon="🤿", layout="wide",
                    menu_items={"Get help": None, "Report a bug": None, "About": None})
-# Barre d'outils de Streamlit (Partager, favori, crayon, GitHub, menu) : masquée
-st.markdown("<style>[data-testid='stToolbar'], [data-testid='stDeployButton'], "
-            "[data-testid='stAppDeployButton'], #MainMenu {display: none !important;}</style>",
+# Boutons Partager, favori, crayon et GitHub masqués ; indicateur de chargement et menu ⋮ (thème) conservés
+st.markdown("<style>[data-testid='stToolbarActions'], [data-testid='stAppDeployButton'], "
+            "[data-testid='stDeployButton'] {display: none !important;}</style>",
             unsafe_allow_html=True)
 state = st.session_state
 state.setdefault("token", None)

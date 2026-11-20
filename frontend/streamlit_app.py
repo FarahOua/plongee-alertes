@@ -15,6 +15,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 import ui
+from busy_button import busy_button
 from clock_picker import clock_picker
 from om_fetch import om_fetch
 
@@ -35,6 +36,7 @@ state.setdefault("email", None)
 state.setdefault("point", DEFAULT_POINT)
 state.setdefault("preview", None)
 state.setdefault("preview_at", 0.0)
+state.setdefault("btn_token", 0)
 state.setdefault("job", None)
 state.setdefault("code_sent_to", None)
 
@@ -193,7 +195,7 @@ with left:
             st.rerun()
     st.markdown(f'<p class="where">{ui.coords(*state.point)} <span>point choisi</span></p>', unsafe_allow_html=True)
 
-    if st.button("Voir les conditions", type="primary", use_container_width=True):
+    if busy_button("Voir les conditions", token=state.btn_token, key="see"):
         fresh = state.preview and time.time() - state.preview_at < 300   # même point, résultat récent
         limited = False
         if not fresh:
@@ -203,6 +205,8 @@ with left:
         if limited:   # Open-Meteo bloque l'adresse IP du serveur : le navigateur prend le relais
             state.job = {"lat": state.point[0], "lon": state.point[1], "tz": None, "nonce": uuid.uuid4().hex[:8]}
             state.preview = None
+        state.btn_token += 1     # le bouton, grisé depuis le clic, se réactive
+        st.rerun()
 
     run_browser_job()
 

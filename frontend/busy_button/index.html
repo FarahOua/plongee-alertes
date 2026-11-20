@@ -1,0 +1,42 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: transparent; font-family: "Source Sans Pro", system-ui, sans-serif; }
+  button { width: 100%; min-height: 44px; border: 0; border-radius: 12px; background: #0E7C86; color: #fff;
+           font: 600 16px/1 inherit; font-family: inherit; cursor: pointer; transition: background .15s; }
+  button:hover { background: #0B6770; }
+  button:focus-visible { outline: 3px solid #F2B84B; outline-offset: 2px; }
+  button:disabled { background: #8aa9ad; cursor: progress; }
+  .spin { display: none; width: 14px; height: 14px; margin-right: 8px; vertical-align: -2px; border-radius: 50%;
+          border: 2px solid rgba(255,255,255,.5); border-top-color: #fff; animation: r .8s linear infinite; }
+  button:disabled .spin { display: inline-block; }
+  @keyframes r { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+</style></head>
+<body>
+<button id="b" type="button"><span class="spin"></span><span id="t"></span></button>
+<script>
+const b = document.getElementById("b"), t = document.getElementById("t");
+let token = null, label = "";
+function send(type, extra) {
+  window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:" + type, ...extra }, "*");
+}
+b.addEventListener("click", () => {
+  if (b.disabled) return;
+  b.disabled = true;                       // grisé immédiatement : un second clic est impossible
+  t.textContent = "Calcul en cours…";
+  send("setComponentValue", { value: Date.now() + "-" + Math.random().toString(36).slice(2, 8), dataType: "json" });
+});
+window.addEventListener("message", ev => {
+  if (!ev.data || ev.data.type !== "streamlit:render") return;
+  const a = ev.data.args;
+  label = a.label;
+  if (token !== null && a.token !== token) b.disabled = false;   // le calcul est fini : on réactive
+  token = a.token;
+  if (!b.disabled) t.textContent = label;
+  send("setFrameHeight", { height: 48 });
+});
+send("componentReady", { apiVersion: 1 });
+</script>
+</body></html>

@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import secrets
+import threading
 from datetime import date
 
 import click
@@ -90,6 +91,33 @@ def _owned_subscription(sub_id: int) -> dict:
 def _public(sub: dict) -> dict:
     return {k: sub[k] for k in ("id", "name", "lat", "lon", "start_date", "end_date", "send_time",
                                 "timezone", "status", "last_sent_on")}
+
+
+_INFLIGHT: dict = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def single_flight(key, fn, wait: float = 120.0):
+    """Deux demandes identiques en même temps ne lancent qu'un seul calcul : la seconde attend le résultat."""
+    with _INFLIGHT_LOCK:
+        entry = _INFLIGHT.get(key)
+        leader = entry is None
+        if leader:
+            entry = _INFLIGHT[key] = {"done": threading.Event(), "result": None, "error": None}
+    if leader:
+        try:
+            entry["result"] = fn()
+        except BaseException as exc:    # transmis aux demandes qui attendent
+            entry["error"] = exc
+        finally:
+            with _INFLIGHT_LOCK:
+                _INFLIGHT.pop(key, None)
+            entry["done"].set()
+    elif not entry["done"].wait(wait):
+        return fn()                     # le premier calcul traîne : on refait le nôtre
+    if entry["error"] is not None:
+        raise entry["error"]
+    return entry["result"]
 
 
 def create_app() -> Flask:
@@ -243,7 +271,9 @@ def create_app() -> Flask:
         except (KeyError, ValueError):
             raise ValueError("Paramètres lat et lon requis.")
         try:
-            report = pipeline.make_report(lat, lon, request.args.get("name", ""))
+            name = request.args.get("name", "")
+            report = dict(single_flight(("preview", round(lat, 3), round(lon, 3), name),
+                                        lambda: pipeline.make_report(lat, lon, name)))
         except openmeteo.OpenMeteoRateLimited:
             # Le site bascule alors sur les appels depuis le navigateur du visiteur (voir /preview/plan)
             return jsonify(code="rate_limited", error="Open-Meteo a atteint sa limite quotidienne pour ce serveur."), 503

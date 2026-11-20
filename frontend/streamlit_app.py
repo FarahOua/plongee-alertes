@@ -22,7 +22,8 @@ st.set_page_config(page_title="Alertes plongée", page_icon="🤿", layout="wide
                    menu_items={"Get help": None, "Report a bug": None, "About": None})
 # Boutons Partager, favori, crayon et GitHub masqués ; indicateur de chargement et menu ⋮ (thème) conservés
 st.markdown("<style>[data-testid='stToolbarActions'], [data-testid='stAppDeployButton'], "
-            "[data-testid='stDeployButton'] {display: none !important;}</style>",
+            "[data-testid='stDeployButton'], [class*='viewerBadge'], "
+            "[data-testid='manage-app-button'] {display: none !important;}</style>",
             unsafe_allow_html=True)
 state = st.session_state
 state.setdefault("token", None)

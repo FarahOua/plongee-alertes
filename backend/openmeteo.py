@@ -1,4 +1,5 @@
 """Récupération des prévisions Open-Meteo (un appel par type de donnée), avec cache par point de grille."""
+import contextvars
 import json
 import logging
 import time
@@ -18,11 +19,44 @@ SST_VARS = ["sea_surface_temperature"]
 KMH_TO_KN = 1 / 1.852
 
 
-STALE_MAX_MINUTES = 12 * 60   # si Open-Meteo refuse, on réutilise un cache de moins de 12 h
-
-
 class OpenMeteoError(RuntimeError):
     pass
+
+
+# Mode « navigateur » : quand l'adresse IP du serveur est bridée par Open-Meteo, c'est le navigateur du
+# visiteur qui interroge Open-Meteo (depuis SON adresse IP) et envoie les réponses brutes. Tant que ce
+# dictionnaire {clé de requête: réponse} est défini, _http_get ne fait aucun appel réseau : il le relit.
+_BROWSER_RESPONSES = contextvars.ContextVar("openmeteo_browser_responses", default=None)
+
+
+# Mémorise qu'Open-Meteo a refusé (quota du jour) pendant un fetch_all : si rien n'a pu être lu, on le signale
+# comme « bridé » (et non « point à terre »), pour que le site bascule sur les appels depuis le navigateur.
+_RATE_LIMITED = contextvars.ContextVar("openmeteo_rate_limited", default=None)
+
+
+def _note_rate_limited() -> None:
+    flag = _RATE_LIMITED.get()
+    if flag is not None:
+        flag.append(True)
+
+
+def browser_mode() -> bool:
+    return _BROWSER_RESPONSES.get() is not None
+
+
+def request_key(url: str, params: dict) -> str:
+    """Identifiant stable d'une requête (le navigateur le renvoie avec sa réponse)."""
+    clean = {k: params[k] for k in sorted(params) if k != "apikey"}
+    return url + "?" + json.dumps(clean, sort_keys=True, ensure_ascii=False)
+
+
+def browser_request(url: str, params: dict) -> dict:
+    return {"id": request_key(url, params), "url": url,
+            "params": {k: v for k, v in params.items() if k != "apikey"}}
+
+
+class OpenMeteoRateLimited(OpenMeteoError):
+    """Quota quotidien de l'adresse IP épuisé (fréquent sur les hébergeurs partagés)."""
 
 
 class OpenMeteoBadRequest(OpenMeteoError):
@@ -35,6 +69,12 @@ def grid_point(lat: float, lon: float) -> tuple[float, float]:
 
 
 def _http_get(url: str, params: dict, retries: int = 3) -> dict:
+    supplied = _BROWSER_RESPONSES.get()
+    if supplied is not None:
+        data = supplied.get(request_key(url, params))
+        if data is None:
+            raise OpenMeteoError("Le navigateur n'a pas pu récupérer cette donnée.")
+        return data
     if config.OPEN_METEO_API_KEY:
         params = {**params, "apikey": config.OPEN_METEO_API_KEY}
     last_error = None
@@ -51,6 +91,8 @@ def _http_get(url: str, params: dict, retries: int = 3) -> dict:
                     reason = resp.text[:120]
                 last_error = ("429 Trop de requêtes : limite d'Open-Meteo atteinte pour cette adresse IP"
                               + (f" ({reason})" if reason else ""))
+                if "daily" in reason.lower():  # quota du jour épuisé : attendre ne sert à rien
+                    raise OpenMeteoRateLimited(last_error)
                 try:
                     wait = min(int(resp.headers.get("Retry-After", wait * 2)), 10)
                 except ValueError:
@@ -144,6 +186,56 @@ def _build_series(kind: str, data: dict, variables: list[str], model: str | None
     return {"timezone": tz, "times": data.get("hourly", {}).get("time", []), "values": values}
 
 
+def _group_variables(kind: str) -> list[str]:
+    return WIND_VARS if kind == "wind" else {"waves": WAVE_VARS, "current": CURRENT_VARS, "sst": SST_VARS}[kind]
+
+
+def _group_request(kind: str, glat: float, glon: float, models: list, tz: str) -> tuple[str, dict]:
+    """URL et paramètres de l'appel Open-Meteo d'un type de donnée pour une liste de modèles."""
+    if kind == "wind":
+        url, extra = config.WEATHER_API_URL, {"wind_speed_unit": "kn"}
+    else:
+        url = config.MARINE_API_URL
+        extra = {"cell_selection": "sea"}  # prendre la maille de mer la plus proche, pas la côte
+    params = {
+        "latitude": glat,
+        "longitude": glon,
+        "hourly": ",".join(_group_variables(kind)),
+        # Même fuseau pour tous les modèles : sinon chaque API prend celui de sa propre maille
+        # (Ceuta = Espagne, M'diq = Maroc) et les journées ne se recoupent plus.
+        "timezone": tz,
+        "forecast_days": config.FORECAST_DAYS,
+        **extra,
+    }
+    if models != [None]:
+        params["models"] = ",".join(models)
+    return url, params
+
+
+def timezone_request(lat: float, lon: float) -> dict:
+    """Appel léger qui renvoie le fuseau horaire du point (champ « timezone » de la réponse)."""
+    return browser_request(config.WEATHER_API_URL, {"latitude": lat, "longitude": lon,
+                                                    "hourly": "wind_speed_10m", "timezone": "auto",
+                                                    "forecast_days": 1})
+
+
+def cached_timezone(lat: float, lon: float) -> str | None:
+    cached = _cache_get(f"tz:{round(lat, 3)}:{round(lon, 3)}", max_age_minutes=365 * 24 * 60)
+    return cached["tz"] if cached else None
+
+
+def plan_requests(lat: float, lon: float, tz: str) -> list[dict]:
+    """Appels Open-Meteo à faire faire au navigateur : seulement ce qui n'est pas déjà en cache."""
+    glat, glon = grid_point(lat, lon)
+    plan = []
+    for kind, models in (("waves", list(config.WAVE_MODELS)), ("wind", list(config.WIND_MODELS)),
+                         ("current", [config.CURRENT_MODEL]), ("sst", [None])):
+        missing = [m for m in models if _cache_get(_series_key(kind, m, glat, glon, tz)) is None]
+        if missing:
+            plan.append(browser_request(*_group_request(kind, glat, glon, missing, tz)))
+    return plan
+
+
 def fetch_group(kind: str, lat: float, lon: float, models: list, tz: str) -> dict:
     """Une source (vagues, vent, courant, SST) pour plusieurs modèles en UN SEUL appel.
 
@@ -162,27 +254,10 @@ def fetch_group(kind: str, lat: float, lon: float, models: list, tz: str) -> dic
     if not missing:
         return results
 
-    if kind == "wind":
-        url, variables = config.WEATHER_API_URL, WIND_VARS
-        extra = {"wind_speed_unit": "kn"}
-    else:
-        url = config.MARINE_API_URL
-        variables = {"waves": WAVE_VARS, "current": CURRENT_VARS, "sst": SST_VARS}[kind]
-        extra = {"cell_selection": "sea"}  # prendre la maille de mer la plus proche, pas la côte
+    variables = _group_variables(kind)
 
     def request(requested: list) -> dict:
-        params = {
-            "latitude": glat,
-            "longitude": glon,
-            "hourly": ",".join(variables),
-            # Même fuseau pour tous les modèles : sinon chaque API prend celui de sa propre maille
-            # (Ceuta = Espagne, M'diq = Maroc) et les journées ne se recoupent plus.
-            "timezone": tz,
-            "forecast_days": config.FORECAST_DAYS,
-            **extra,
-        }
-        if requested != [None]:
-            params["models"] = ",".join(requested)
+        url, params = _group_request(kind, glat, glon, requested, tz)
         return _http_get(url, params)
 
     responses = {}   # modèle -> réponse brute
@@ -202,18 +277,18 @@ def fetch_group(kind: str, lat: float, lon: float, models: list, tz: str) -> dic
                     log.warning("Open-Meteo %s/%s indisponible : %s", kind, model, inner)
                     failed.append(model)
     except OpenMeteoError as exc:
+        if isinstance(exc, OpenMeteoRateLimited):
+            _note_rate_limited()
         log.warning("Open-Meteo %s (%s) indisponible : %s", kind, ", ".join(str(m) for m in missing), exc)
         failed = list(missing)
 
     for model, data in responses.items():
         series = _build_series(kind, data, variables, model, tz)
-        _cache_put(_series_key(kind, model, glat, glon, tz), series or {})
+        if not browser_mode():   # données envoyées par un navigateur : jamais mises dans le cache partagé
+            _cache_put(_series_key(kind, model, glat, glon, tz), series or {})
         results[model] = series
     for model in failed:  # pas de mise en cache : on réessaiera au prochain passage
-        stale = _cache_get(_series_key(kind, model, glat, glon, tz), max_age_minutes=STALE_MAX_MINUTES)
-        if stale:
-            log.warning("Open-Meteo %s/%s : données en cache de moins de 12 h réutilisées", kind, model)
-        results[model] = stale or None
+        results[model] = None
     return results
 
 
@@ -226,6 +301,15 @@ def fetch_all(lat: float, lon: float, tz: str | None = None) -> dict:
     """Toutes les sources pour un point, toutes à l'heure locale du spot (fuseau tz)."""
     tz = tz or resolve_timezone(lat, lon)
     bundle = {"timezone": tz, "waves": {}, "wind": {}, "current": None, "sst": None}
+    flag = []
+    token = _RATE_LIMITED.set(flag)
+    try:
+        return _fetch_all(lat, lon, tz, bundle, flag)
+    finally:
+        _RATE_LIMITED.reset(token)
+
+
+def _fetch_all(lat: float, lon: float, tz: str, bundle: dict, flag: list) -> dict:
 
     def by_time(series: dict) -> dict:
         times = series["times"]
@@ -244,6 +328,8 @@ def fetch_all(lat: float, lon: float, tz: str | None = None) -> dict:
         bundle["sst"] = by_time(sst)
 
     if not bundle["waves"] and not bundle["wind"]:
+        if flag:
+            raise OpenMeteoRateLimited("Open-Meteo a atteint sa limite quotidienne pour ce serveur.")
         raise OpenMeteoError("Aucun modèle n'a renvoyé de données pour ce point.")
     return bundle
 
@@ -264,5 +350,7 @@ def resolve_timezone(lat: float, lon: float) -> str:
         tz = data.get("timezone") or "UTC"
         _cache_put(key, {"tz": tz})
         return tz
+    except OpenMeteoRateLimited:
+        raise   # le fuseau est inconnu : mieux vaut le dire que supposer UTC
     except OpenMeteoError:
         return "UTC"

@@ -9,7 +9,7 @@ from datetime import date
 import click
 from flask import Flask, abort, g, jsonify, request
 
-from . import auth, config, openmeteo, pipeline
+from . import auth, config, openmeteo, pipeline, visibility
 from .db import describe, get_db, init_db
 from .mailer import send_email
 
@@ -58,6 +58,26 @@ def _validate_subscription(data: dict, partial: bool = False) -> dict:
     return out
 
 
+def _check_timezone(tz: str) -> None:
+    from zoneinfo import ZoneInfo
+    try:
+        ZoneInfo(tz)
+    except Exception:
+        raise ValueError("Fuseau horaire invalide.")
+
+
+def _spot_timezone(lat: float, lon: float, hint) -> str:
+    """Fuseau du spot. Si Open-Meteo bloque le serveur, on accepte celui trouvé par le navigateur (hint)."""
+    try:
+        return openmeteo.resolve_timezone(lat, lon)
+    except openmeteo.OpenMeteoRateLimited:
+        if hint:
+            _check_timezone(str(hint))
+            return str(hint)
+        raise ValueError("Open-Meteo bloque ce serveur pour le moment : clique d'abord sur « Comparer les modèles » "
+                         "pour ce point, puis crée l'alerte.")
+
+
 def _owned_subscription(sub_id: int) -> dict:
     with get_db() as conn:
         row = conn.execute("SELECT * FROM subscriptions WHERE id = ? AND user_id = ?",
@@ -74,6 +94,7 @@ def _public(sub: dict) -> dict:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+    app.config["MAX_CONTENT_LENGTH"] = 5 * 1024 * 1024   # réponses Open-Meteo envoyées par le navigateur
     app.json.ensure_ascii = False
     init_db()
 
@@ -146,7 +167,7 @@ def create_app() -> Flask:
                                   (g.user["id"],)).fetchone()[0]
         if active >= config.MAX_ACTIVE_SUBSCRIPTIONS:
             raise ValueError(f"Maximum {config.MAX_ACTIVE_SUBSCRIPTIONS} alertes actives.")
-        tz = openmeteo.resolve_timezone(data["lat"], data["lon"])
+        tz = _spot_timezone(data["lat"], data["lon"], (request.get_json(silent=True) or {}).get("timezone"))
         with get_db() as conn:
             cur = conn.execute(
                 "INSERT INTO subscriptions (user_id, name, lat, lon, start_date, end_date, send_time, "
@@ -170,7 +191,7 @@ def create_app() -> Flask:
             payload.setdefault("lon", sub["lon"])
         data = _validate_subscription(payload, partial=True)
         if "lat" in data:
-            data["timezone"] = openmeteo.resolve_timezone(data["lat"], data["lon"])
+            data["timezone"] = _spot_timezone(data["lat"], data["lon"], payload.get("timezone"))
         if data.get("status") == "active" and sub["status"] == "ended":
             raise ValueError("Alerte terminée : crée une nouvelle alerte.")
         reset_today = False
@@ -223,8 +244,47 @@ def create_app() -> Flask:
             raise ValueError("Paramètres lat et lon requis.")
         try:
             report = pipeline.make_report(lat, lon, request.args.get("name", ""))
+        except openmeteo.OpenMeteoRateLimited:
+            # Le site bascule alors sur les appels depuis le navigateur du visiteur (voir /preview/plan)
+            return jsonify(code="rate_limited", error="Open-Meteo a atteint sa limite quotidienne pour ce serveur."), 503
         except openmeteo.OpenMeteoError as exc:
             return jsonify(error=f"{exc} Le point est peut-être à terre : clique plus au large."), 422
+        if not report["models"]["waves"]:
+            report["warning"] = "Aucun modèle de vagues ici : le point est peut-être à terre."
+        return jsonify(report)
+
+    @app.get("/preview/plan")
+    def preview_plan():
+        """Appels Open-Meteo que le navigateur doit faire quand le serveur est bridé (étape 1 : fuseau)."""
+        try:
+            lat, lon = float(request.args["lat"]), float(request.args["lon"])
+        except (KeyError, ValueError):
+            raise ValueError("Paramètres lat et lon requis.")
+        tz = request.args.get("tz") or openmeteo.cached_timezone(lat, lon)
+        if not tz:
+            return jsonify(stage="tz", tz=None, requests=[openmeteo.timezone_request(lat, lon)])
+        _check_timezone(tz)
+        requests_ = openmeteo.plan_requests(lat, lon, tz) + visibility.rain_plan(lat, lon, tz)
+        return jsonify(stage="data", tz=tz, requests=requests_)
+
+    @app.post("/preview/build")
+    def preview_build():
+        """Construit l'aperçu à partir des réponses Open-Meteo récupérées par le navigateur."""
+        body = request.get_json(silent=True) or {}
+        try:
+            lat, lon = float(body["lat"]), float(body["lon"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Paramètres lat et lon requis.")
+        tz = str(body.get("tz") or "")
+        _check_timezone(tz)
+        responses = {k: v for k, v in (body.get("responses") or {}).items() if isinstance(v, dict)}
+        token = openmeteo._BROWSER_RESPONSES.set(responses)
+        try:
+            report = pipeline.make_report(lat, lon, str(body.get("name", ""))[:60], tz)
+        except openmeteo.OpenMeteoError as exc:
+            return jsonify(error=f"{exc} Le point est peut-être à terre : clique plus au large."), 422
+        finally:
+            openmeteo._BROWSER_RESPONSES.reset(token)
         if not report["models"]["waves"]:
             report["warning"] = "Aucun modèle de vagues ici : le point est peut-être à terre."
         return jsonify(report)

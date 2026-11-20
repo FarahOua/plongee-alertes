@@ -3,6 +3,7 @@
 Lancement : streamlit run frontend/streamlit_app.py
 """
 import os
+import uuid
 from datetime import date, timedelta
 
 import folium
@@ -12,6 +13,7 @@ import streamlit as st
 from streamlit_folium import st_folium
 
 from clock_picker import clock_picker
+from om_fetch import om_fetch
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:5000").rstrip("/")
 DEFAULT_POINT = (35.69, -5.30)  # au large de M'diq
@@ -29,6 +31,7 @@ state.setdefault("token", None)
 state.setdefault("email", None)
 state.setdefault("point", DEFAULT_POINT)
 state.setdefault("preview", None)
+state.setdefault("job", None)
 state.setdefault("code_sent_to", None)
 
 
@@ -64,6 +67,53 @@ if not state.token and st.query_params.get("s"):
         state.email = me.get("email")
     elif state.token is None:       # jeton refusé (api() l'a déjà effacé)
         st.query_params.pop("s", None)
+
+
+def server_preview(lat: float, lon: float):
+    """Aperçu calculé par le serveur. Renvoie (rapport, bridé) ; bridé=True si Open-Meteo bloque le serveur."""
+    try:
+        resp = requests.get(f"{BACKEND_URL}/preview", params={"lat": lat, "lon": lon}, timeout=90)
+    except requests.RequestException:
+        st.error(f"Backend injoignable ({BACKEND_URL}). Lance-le avec : flask --app backend.app run")
+        return None, False
+    if resp.status_code == 503 and resp.json().get("code") == "rate_limited":
+        return None, True
+    if not resp.ok:
+        try:
+            st.error(resp.json().get("error", resp.text))
+        except ValueError:
+            st.error(resp.text)
+        return None, False
+    return resp.json(), False
+
+
+def run_browser_job():
+    """Quand Open-Meteo bloque le serveur : le navigateur du visiteur fait les appels, le serveur assemble."""
+    job = state.get("job")
+    if not job:
+        return
+    params = {"lat": job["lat"], "lon": job["lon"], **({"tz": job["tz"]} if job.get("tz") else {})}
+    plan = api("get", "/preview/plan", params=params)
+    if plan is None:
+        state.job = None
+        return
+    result = om_fetch(plan["requests"], key=f"omf_{job['nonce']}_{plan['stage']}") if plan["requests"] else {"responses": {}}
+    if result is None:
+        st.info("Interrogation des modèles depuis ton navigateur…")
+        return
+    responses = result.get("responses", {})
+    if plan["stage"] == "tz":
+        data = next((v for v in responses.values() if v), None)
+        if not data or not data.get("timezone"):
+            st.error("Impossible de joindre Open-Meteo depuis ton navigateur. Réessaie dans un instant.")
+            state.job = None
+            return
+        state.job = {**job, "tz": data["timezone"]}
+        st.rerun()
+    report = api("post", "/preview/build", json={"lat": job["lat"], "lon": job["lon"], "tz": plan["tz"],
+                                                  "name": "", "responses": responses})
+    state.job, state.preview = None, report
+    st.rerun()
 
 
 # --- Connexion (barre latérale) ----------------------------------------------------
@@ -110,7 +160,12 @@ with left:
 
     if st.button("Comparer les modèles sur ce point"):
         with st.spinner("Interrogation des modèles…"):
-            state.preview = api("get", "/preview", params={"lat": state.point[0], "lon": state.point[1]})
+            state.preview, limited = server_preview(state.point[0], state.point[1])
+        if limited:   # Open-Meteo bloque l'adresse IP du serveur : le navigateur prend le relais
+            state.job = {"lat": state.point[0], "lon": state.point[1], "tz": None, "nonce": uuid.uuid4().hex[:8]}
+            state.preview = None
+
+    run_browser_job()
 
     report = state.preview
     if report:
@@ -172,6 +227,8 @@ with left:
                     "name": name, "lat": state.point[0], "lon": state.point[1],
                     "start_date": period[0].isoformat(), "end_date": period[1].isoformat(),
                     "send_time": send_time,
+                    # fuseau déjà trouvé par « Comparer les modèles » (utile si Open-Meteo bloque le serveur)
+                    "timezone": (state.preview or {}).get("timezone"),
                 }):
                     st.success("Alerte créée.")
                     st.rerun()
@@ -225,6 +282,7 @@ with right:
                                     payload["end_date"] = new_period[1].isoformat()
                                 if move:
                                     payload["lat"], payload["lon"] = state.point
+                                    payload["timezone"] = (state.preview or {}).get("timezone")
                                 if api("patch", f"/subscriptions/{sub['id']}", json=payload):
                                     st.rerun()
                 else:

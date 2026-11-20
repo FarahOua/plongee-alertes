@@ -1,5 +1,6 @@
 import logging
 import os
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
@@ -116,6 +117,18 @@ def fetch_satellite(lat: float, lon: float, today: date) -> dict | None:
     return _cached(key, fetch)
 
 
+def rain_request_params(lat: float, lon: float, tz: str) -> dict:
+    return {"latitude": lat, "longitude": lon, "daily": "precipitation_sum",
+            "timezone": tz, "past_days": 2, "forecast_days": config.FORECAST_DAYS}
+
+
+def rain_plan(lat: float, lon: float, tz: str) -> list[dict]:
+    """Appel Open-Meteo de la pluie à faire faire au navigateur (liste vide si inutile ou déjà en cache)."""
+    if not is_configured() or openmeteo._cache_get(f"vis:rain:{round(lat, 2)}:{round(lon, 2)}:{tz}") is not None:
+        return []
+    return [openmeteo.browser_request(config.WEATHER_API_URL, rain_request_params(lat, lon, tz))]
+
+
 def fetch_recent_rain(lat: float, lon: float, tz: str) -> dict | None:
     """Pluie journalière (mm) sur 2 jours passés + jours prévus, via Open-Meteo."""
     key = f"vis:rain:{round(lat, 2)}:{round(lon, 2)}:{tz}"
@@ -123,16 +136,14 @@ def fetch_recent_rain(lat: float, lon: float, tz: str) -> dict | None:
     if cached is not None:
         return cached
     try:
-        data = openmeteo._http_get(config.WEATHER_API_URL, {
-            "latitude": lat, "longitude": lon, "daily": "precipitation_sum",
-            "timezone": tz, "past_days": 2, "forecast_days": config.FORECAST_DAYS,
-        }, retries=2)
+        data = openmeteo._http_get(config.WEATHER_API_URL, rain_request_params(lat, lon, tz), retries=2)
     except openmeteo.OpenMeteoError as exc:
         log.warning("Pluie indisponible : %s", exc)
         return None
     daily = data.get("daily", {})
     rain = {d: v for d, v in zip(daily.get("time", []), daily.get("precipitation_sum", [])) if v is not None}
-    openmeteo._cache_put(key, rain)
+    if not openmeteo.browser_mode():
+        openmeteo._cache_put(key, rain)
     return rain
 
 
@@ -181,9 +192,10 @@ def enrich_report(report: dict, lat: float, lon: float) -> dict:
     start = date.fromisoformat(report["days"][0]["date"])
     # Les trois sources sont indépendantes : on les interroge en même temps (surtout Copernicus, lent).
     with ThreadPoolExecutor(max_workers=3) as pool:
-        f_kd = pool.submit(fetch_kd490_forecast, lat, lon, start, len(report["days"]))
-        f_sat = pool.submit(fetch_satellite, lat, lon, start)
-        f_rain = pool.submit(fetch_recent_rain, lat, lon, report["timezone"])
+        # copy_context : les threads héritent du mode « navigateur » (réponses fournies par le visiteur)
+        f_kd = pool.submit(contextvars.copy_context().run, fetch_kd490_forecast, lat, lon, start, len(report["days"]))
+        f_sat = pool.submit(contextvars.copy_context().run, fetch_satellite, lat, lon, start)
+        f_rain = pool.submit(contextvars.copy_context().run, fetch_recent_rain, lat, lon, report["timezone"])
         kd_forecast, satellite, rain = f_kd.result(), f_sat.result(), f_rain.result()
     if not kd_forecast and not satellite:
         return report

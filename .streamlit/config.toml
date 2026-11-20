@@ -2,3 +2,7 @@
 [client]
 # « viewer » : barre d'outils de visiteur (indicateur de chargement et menu ⋮ avec Réglages, thème clair/sombre).
 toolbarMode = "viewer"
+
+[theme]
+# Couleur des éléments actifs (cases, curseurs, focus) : le bleu-vert de l'interface
+primaryColor = "#0E7C86"

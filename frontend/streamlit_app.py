@@ -5,6 +5,7 @@ L'habillage (styles, coupe de mer, tableau des instituts) est dans ui.py.
 Lancement : streamlit run frontend/streamlit_app.py
 """
 import os
+import time
 import uuid
 from datetime import date, timedelta
 
@@ -33,11 +34,16 @@ state.setdefault("token", None)
 state.setdefault("email", None)
 state.setdefault("point", DEFAULT_POINT)
 state.setdefault("preview", None)
+state.setdefault("preview_at", 0.0)
 state.setdefault("job", None)
 state.setdefault("code_sent_to", None)
 
 
 # --- Appels au backend --------------------------------------------------------
+WAKING = (502, 504)   # le serveur gratuit dort ou redémarre : il répond de nouveau au bout d'une minute
+WAKING_MSG = "Le serveur se réveille. Réessaie dans une minute."
+
+
 def api(method: str, path: str, **kwargs):
     headers = {"Authorization": f"Bearer {state.token}"} if state.token else {}
     try:
@@ -50,11 +56,14 @@ def api(method: str, path: str, **kwargs):
         st.query_params.pop("s", None)
         st.warning("Session expirée : reconnecte-toi.")
         return None
+    if resp.status_code in WAKING:
+        st.warning(WAKING_MSG)
+        return None
     if not resp.ok:
         try:
             st.error(resp.json().get("error", resp.text))
         except ValueError:
-            st.error(resp.text)
+            st.error("Le serveur a renvoyé une erreur. Réessaie dans un instant.")
         return None
     return resp.json()
 
@@ -78,15 +87,20 @@ def server_preview(lat: float, lon: float):
     except requests.RequestException:
         st.error(f"Backend injoignable ({BACKEND_URL}). Lance-le avec : flask --app backend.app run")
         return None, False
-    if resp.status_code == 503 and resp.json().get("code") == "rate_limited":
+    if resp.status_code in WAKING:
+        st.warning(WAKING_MSG)
+        return None, False
+    try:
+        body = resp.json()
+    except ValueError:
+        st.error("Le serveur a renvoyé une erreur. Réessaie dans un instant.")
+        return None, False
+    if resp.status_code == 503 and body.get("code") == "rate_limited":
         return None, True
     if not resp.ok:
-        try:
-            st.error(resp.json().get("error", resp.text))
-        except ValueError:
-            st.error(resp.text)
+        st.error(body.get("error", "Erreur du serveur."))
         return None, False
-    return resp.json(), False
+    return body, False
 
 
 def run_browser_job():
@@ -114,7 +128,7 @@ def run_browser_job():
         st.rerun()
     report = api("post", "/preview/build", json={"lat": job["lat"], "lon": job["lon"], "tz": plan["tz"],
                                                   "name": "", "responses": responses})
-    state.job, state.preview = None, report
+    state.job, state.preview, state.preview_at = None, report, time.time()
     st.rerun()
 
 
@@ -180,8 +194,12 @@ with left:
     st.markdown(f'<p class="where">{ui.coords(*state.point)} <span>point choisi</span></p>', unsafe_allow_html=True)
 
     if st.button("Voir les conditions", type="primary", use_container_width=True):
-        with st.spinner("Les modèles répondent…"):
-            state.preview, limited = server_preview(state.point[0], state.point[1])
+        fresh = state.preview and time.time() - state.preview_at < 300   # même point, résultat récent
+        limited = False
+        if not fresh:
+            with st.spinner("Les modèles répondent…"):
+                state.preview, limited = server_preview(state.point[0], state.point[1])
+            state.preview_at = time.time()
         if limited:   # Open-Meteo bloque l'adresse IP du serveur : le navigateur prend le relais
             state.job = {"lat": state.point[0], "lon": state.point[1], "tz": None, "nonce": uuid.uuid4().hex[:8]}
             state.preview = None

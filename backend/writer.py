@@ -118,6 +118,9 @@ def _parse_json(content: str) -> dict:
     return data
 
 
+LLM_TIMEOUT = 60  # secondes
+
+
 def _call_llm(provider: dict, facts: dict) -> dict:
     body = {
         "model": provider["model"],
@@ -131,10 +134,13 @@ def _call_llm(provider: dict, facts: dict) -> dict:
     }
     url = f"{provider['base_url']}/chat/completions"
     headers = {"Authorization": f"Bearer {provider['api_key']}"}
-    resp = requests.post(url, headers=headers, json=body, timeout=40)
-    if resp.status_code == 400:  # le fournisseur refuse le mode JSON : on retente sans, le prompt l'exige déjà
-        body.pop("response_format")
-        resp = requests.post(url, headers=headers, json=body, timeout=40)
+    # « reasoning_effort » bas : les modèles Gemini « réflexion » mettent sinon plus de 40 s à répondre
+    body["reasoning_effort"] = "low"
+    resp = requests.post(url, headers=headers, json=body, timeout=LLM_TIMEOUT)
+    if resp.status_code == 400:  # option refusée (mode JSON, effort de réflexion) : on retente sans
+        body.pop("response_format", None)
+        body.pop("reasoning_effort", None)
+        resp = requests.post(url, headers=headers, json=body, timeout=LLM_TIMEOUT)
     resp.raise_for_status()
     return _parse_json(resp.json()["choices"][0]["message"]["content"])
 

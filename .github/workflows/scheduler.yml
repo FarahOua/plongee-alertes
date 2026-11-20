@@ -1,12 +1,13 @@
-# Planificateur gratuit : GitHub lance ce travail toutes les 5 minutes et envoie les alertes dues.
+# Envoi des alertes. Lancé toutes les 5 minutes par cron-job.org (appel à l'API GitHub « dispatches »).
+# Le déclencheur GitHub ci-dessous n'est qu'un secours : il est souvent retardé, mais sans danger (pas de doublon).
 # Dépôt PUBLIC recommandé : les minutes d'exécution sont alors illimitées et gratuites.
 # Les clés ne sont jamais dans le code : Settings → Secrets and variables → Actions.
 name: Envoi des alertes
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch:        # bouton « Run workflow » pour tester à la main
+    - cron: "17,47 * * * *"   # secours, deux fois par heure
+  workflow_dispatch:           # appelé par cron-job.org ; bouton « Run workflow » pour tester à la main
 
 concurrency:
   group: envoi-alertes

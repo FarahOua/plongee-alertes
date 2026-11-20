@@ -173,15 +173,22 @@ def create_app() -> Flask:
             data["timezone"] = openmeteo.resolve_timezone(data["lat"], data["lon"])
         if data.get("status") == "active" and sub["status"] == "ended":
             raise ValueError("Alerte terminée : crée une nouvelle alerte.")
+        reset_today = False
         # Si le planning change (heure, dates, lieu), l'alerte doit pouvoir repartir aujourd'hui :
         # on efface « déjà envoyé aujourd'hui ». Une valeur identique ou une simple pause ne compte pas.
         if any(k in data and data[k] != sub[k]
                for k in ("send_time", "start_date", "end_date", "lat", "lon")):
             data["last_sent_on"] = None
+            reset_today = True
         if data:
             sets = ", ".join(f"{k} = ?" for k in data)
             with get_db() as conn:
                 conn.execute(f"UPDATE subscriptions SET {sets} WHERE id = ?", (*data.values(), sub_id))
+                if reset_today:
+                    # Le journal d'envoi bloque aussi un second mail le même jour : on libère la date du jour
+                    today = pipeline.local_now(data.get("timezone", sub["timezone"])).date().isoformat()
+                    conn.execute("DELETE FROM email_log WHERE subscription_id = ? AND report_date = ?",
+                                 (sub_id, today))
         return jsonify(_public(_owned_subscription(sub_id)))
 
     @app.delete("/subscriptions/<int:sub_id>")

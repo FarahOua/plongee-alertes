@@ -1,0 +1,121 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  :root { --txt:#31333f; --bg:#fff; --prim:#ff4b4b; --soft:rgba(128,128,128,.15); }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Source Sans Pro",system-ui,sans-serif; color:var(--txt); background:transparent; }
+  .label { font-size:14px; margin:0 0 6px; }
+  .wrap { width:240px; padding:8px 0; }
+  .digits { display:flex; align-items:center; justify-content:center; gap:4px; font-size:40px; font-weight:600; margin-bottom:8px; }
+  .digits button { font:inherit; color:inherit; background:var(--soft); border:0; border-radius:8px; padding:2px 12px; cursor:pointer; }
+  .digits button.on { background:var(--prim); color:#fff; }
+  svg { display:block; touch-action:none; cursor:pointer; user-select:none; }
+  .face { fill:var(--soft); }
+  .num { font-size:14px; fill:var(--txt); text-anchor:middle; dominant-baseline:central; pointer-events:none; }
+  .num.inner { font-size:12px; opacity:.75; }
+  .num.sel { fill:#fff; font-weight:700; }
+  .hand { stroke:var(--prim); stroke-width:2; }
+  .knob { fill:var(--prim); }
+  .dot { fill:var(--prim); }
+</style></head>
+<body>
+<div class="wrap">
+  <div class="label" id="label"></div>
+  <div class="digits"><button id="bh" class="on"></button><span>:</span><button id="bm"></button></div>
+  <svg id="clock" width="240" height="240" viewBox="0 0 240 240"></svg>
+</div>
+<script>
+const C = 120, R_OUT = 98, R_IN = 62, R_MIN = 98;
+const svg = document.getElementById("clock");
+const bh = document.getElementById("bh"), bm = document.getElementById("bm");
+let hour = 6, minute = 30, mode = "hour", ready = false;
+
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs, text) => { const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]); if (text !== undefined) e.textContent = text; return e; };
+const pad = n => String(n).padStart(2, "0");
+const pos = (r, deg) => [C + r * Math.sin(deg * Math.PI / 180), C - r * Math.cos(deg * Math.PI / 180)];
+
+// Position d'une heure (0-23) : couronne extérieure 1-12, intérieure 13-23 et 00 (en haut)
+function hourSpot(h) {
+  const inner = h === 0 || h > 12;
+  const base = h === 0 ? 12 : (h > 12 ? h - 12 : h);
+  return { r: inner ? R_IN : R_OUT, deg: (base % 12) * 30 };
+}
+
+function draw() {
+  svg.replaceChildren();
+  svg.appendChild(el("circle", { cx: C, cy: C, r: 112, class: "face" }));
+  let spot;
+  if (mode === "hour") { spot = hourSpot(hour); }
+  else { spot = { r: R_MIN, deg: minute * 6 }; }
+  const [x, y] = pos(spot.r, spot.deg);
+  svg.appendChild(el("line", { x1: C, y1: C, x2: x, y2: y, class: "hand" }));
+  svg.appendChild(el("circle", { cx: C, cy: C, r: 3, class: "dot" }));
+  svg.appendChild(el("circle", { cx: x, cy: y, r: 17, class: "knob" }));
+  if (mode === "hour") {
+    for (let h = 0; h < 24; h++) {
+      const s = hourSpot(h), [tx, ty] = pos(s.r, s.deg);
+      const t = el("text", { x: tx, y: ty, class: "num" + (s.r === R_IN ? " inner" : "") + (h === hour ? " sel" : "") }, pad(h) === "00" ? "00" : String(h));
+      svg.appendChild(t);
+    }
+  } else {
+    for (let m = 0; m < 60; m += 5) {
+      const [tx, ty] = pos(R_MIN, m * 6);
+      svg.appendChild(el("text", { x: tx, y: ty, class: "num" + (m === minute ? " sel" : "") }, pad(m)));
+    }
+  }
+  bh.textContent = pad(hour); bm.textContent = pad(minute);
+  bh.className = mode === "hour" ? "on" : ""; bm.className = mode === "minute" ? "on" : "";
+}
+
+function send() {
+  window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setComponentValue",
+    value: pad(hour) + ":" + pad(minute), dataType: "json" }, "*");
+}
+
+function pick(ev) {
+  const rect = svg.getBoundingClientRect();
+  const dx = ev.clientX - rect.left - C * rect.width / 240, dy = ev.clientY - rect.top - C * rect.height / 240;
+  const dist = Math.hypot(dx, dy) * 240 / rect.width;
+  let deg = Math.atan2(dx, -dy) * 180 / Math.PI; if (deg < 0) deg += 360;
+  if (mode === "hour") {
+    const base = Math.round(deg / 30) % 12;               // 0 = en haut
+    const inner = dist < (R_OUT + R_IN) / 2;
+    hour = inner ? (base === 0 ? 0 : base + 12) : (base === 0 ? 12 : base);
+  } else {
+    minute = (Math.round(deg / 30) * 5) % 60;              // pas de 5 minutes
+  }
+  draw();
+}
+
+let dragging = false;
+svg.addEventListener("pointerdown", e => { dragging = true; svg.setPointerCapture(e.pointerId); pick(e); });
+svg.addEventListener("pointermove", e => { if (dragging) pick(e); });
+svg.addEventListener("pointerup", () => {
+  if (!dragging) return; dragging = false;
+  if (mode === "hour") { mode = "minute"; draw(); }
+  send();
+});
+bh.onclick = () => { mode = "hour"; draw(); };
+bm.onclick = () => { mode = "minute"; draw(); };
+
+window.addEventListener("message", ev => {
+  if (!ev.data || ev.data.type !== "streamlit:render") return;
+  const a = ev.data.args || {}, th = ev.data.theme || {};
+  const r = document.documentElement.style;
+  if (th.textColor) r.setProperty("--txt", th.textColor);
+  if (th.primaryColor) r.setProperty("--prim", th.primaryColor);
+  document.getElementById("label").textContent = a.label || "";
+  const m = /^(\d{1,2}):(\d{2})$/.exec(a.value || "");
+  if (m && !dragging) {
+    const nh = +m[1], nm = Math.round(+m[2] / 5) * 5 % 60;
+    if (nh !== hour || nm !== minute) { hour = nh; minute = nm; }
+  }
+  draw();
+  if (!ready) { ready = true; }
+  window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: 330 }, "*");
+});
+window.parent.postMessage({ isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 }, "*");
+draw();
+</script></body></html>

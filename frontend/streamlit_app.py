@@ -3,13 +3,15 @@
 Lancement : streamlit run frontend/streamlit_app.py
 """
 import os
-from datetime import date, time, timedelta
+from datetime import date, timedelta
 
 import folium
 import pandas as pd
 import requests
 import streamlit as st
 from streamlit_folium import st_folium
+
+from clock_picker import clock_picker
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:5000").rstrip("/")
 DEFAULT_POINT = (35.69, -5.30)  # au large de M'diq
@@ -35,7 +37,6 @@ def api(method: str, path: str, **kwargs):
         return None
     if resp.status_code == 401:
         state.token = None
-        st.query_params.pop("s", None)
         st.warning("Session expirée : reconnecte-toi.")
         return None
     if not resp.ok:
@@ -47,26 +48,13 @@ def api(method: str, path: str, **kwargs):
     return resp.json()
 
 
-# Recharger la page crée une nouvelle session Streamlit : la mémoire est vide. Le jeton de connexion
-# est donc aussi gardé dans l'adresse de la page (?s=…) et relu ici. Ne partage pas cette adresse
-# une fois connecté ; « Se déconnecter » la nettoie.
-if not state.token and st.query_params.get("s"):
-    state.token = st.query_params["s"]
-    me = api("get", "/me")
-    if me:
-        state.email = me.get("email")
-    elif state.token is None:       # jeton refusé (api() l'a déjà effacé)
-        st.query_params.pop("s", None)
-
-
 # --- Connexion (barre latérale) ----------------------------------------------------
 with st.sidebar:
     st.header("Mon compte")
     if state.token:
-        st.success(f"Connecté : {state.email or 'ton compte'}")
+        st.success(f"Connecté : {state.email}")
         if st.button("Se déconnecter"):
             state.token = state.email = state.code_sent_to = None
-            st.query_params.pop("s", None)
             st.rerun()
     else:
         email = st.text_input("Adresse mail", value=state.code_sent_to or "")
@@ -79,7 +67,6 @@ with st.sidebar:
                 data = api("post", "/auth/verify", json={"email": state.code_sent_to, "code": code})
                 if data:
                     state.token, state.email = data["token"], data["email"]
-                    st.query_params["s"] = state.token
                     st.rerun()
     st.divider()
     st.caption("Prévisions : Open-Meteo, Météo-France, ECMWF, NOAA, DWD, Copernicus Marine. ")
@@ -157,14 +144,14 @@ with left:
             period = st.date_input("Période d'envoi (du … au …)",
                                    value=(date.today(), date.today() + timedelta(days=7)),
                                    min_value=date.today(), format="DD/MM/YYYY")
-            send_time = st.time_input("Heure d'envoi (heure locale du spot)", value=time(6, 30), step=900)
+            send_time = clock_picker("Heure d'envoi (heure locale du spot)", "06:30", key="new_send_time")
             if st.form_submit_button("Créer l'alerte", type="primary"):
                 if not isinstance(period, (tuple, list)) or len(period) != 2:
                     st.error("Choisis une date de début et une date de fin.")
                 elif api("post", "/subscriptions", json={
                     "name": name, "lat": state.point[0], "lon": state.point[1],
                     "start_date": period[0].isoformat(), "end_date": period[1].isoformat(),
-                    "send_time": send_time.strftime("%H:%M"),
+                    "send_time": send_time,
                 }):
                     st.success("Alerte créée.")
                     st.rerun()
@@ -208,11 +195,11 @@ with right:
                             new_period = st.date_input(
                                 "Période", format="DD/MM/YYYY",
                                 value=(date.fromisoformat(sub["start_date"]), date.fromisoformat(sub["end_date"])))
-                            h, m = map(int, sub["send_time"].split(":"))
-                            new_time = st.time_input("Heure d'envoi", value=time(h, m), step=900)
+                            new_time = clock_picker("Heure d'envoi (heure locale du spot)", sub["send_time"],
+                                                    key=f"send_time_{sub['id']}")
                             move = st.checkbox(f"Déplacer sur le point sélectionné ({state.point[0]}, {state.point[1]})")
                             if st.form_submit_button("Enregistrer"):
-                                payload = {"name": new_name, "send_time": new_time.strftime("%H:%M")}
+                                payload = {"name": new_name, "send_time": new_time}
                                 if isinstance(new_period, (tuple, list)) and len(new_period) == 2:
                                     payload["start_date"] = new_period[0].isoformat()
                                     payload["end_date"] = new_period[1].isoformat()

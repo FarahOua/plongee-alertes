@@ -18,7 +18,12 @@ DEFAULT_POINT = (35.69, -5.30)  # au large de M'diq
 STATUS_LABELS = {"active": "Active", "paused": "En pause", "ended": "Terminée"}
 AGREEMENT_ICONS = {"élevé": "🟢", "moyen": "🟠", "faible": "🔴", "inconnu": "⚪"}
 
-st.set_page_config(page_title="Alertes plongée", page_icon="🤿", layout="wide")
+st.set_page_config(page_title="Alertes plongée", page_icon="🤿", layout="wide",
+                   menu_items={"Get help": None, "Report a bug": None, "About": None})
+# Barre d'outils de Streamlit (Partager, favori, crayon, GitHub, menu) : masquée
+st.markdown("<style>[data-testid='stToolbar'], [data-testid='stDeployButton'], "
+            "[data-testid='stAppDeployButton'], #MainMenu {display: none !important;}</style>",
+            unsafe_allow_html=True)
 state = st.session_state
 state.setdefault("token", None)
 state.setdefault("email", None)

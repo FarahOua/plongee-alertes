@@ -1,0 +1,4 @@
+# Réglages du site Streamlit (lus aussi par Streamlit Community Cloud).
+[client]
+# « minimal » : masque Partager, favori, crayon et GitHub ; seul reste ce que l'appli autorise.
+toolbarMode = "minimal"

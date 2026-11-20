@@ -1,5 +1,6 @@
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 
 from . import config, openmeteo
@@ -41,7 +42,8 @@ def _nearest_valid(da, lat: float, lon: float):
     return float(values.flat[int(np.argmin(dist))])
 
 
-def _open(dataset_id: str, variable: str, lat: float, lon: float, start: date, end: date):
+def _open(dataset_id: str, variables: list[str], lat: float, lon: float, start: date, end: date) -> dict:
+    """Ouvre le jeu de données UNE fois pour toutes les variables demandées : {variable: tableau}."""
     import copernicusmarine
 
     # Identifiants passés explicitement : la boîte à outils ne lit pas toujours les variables d'environnement.
@@ -49,16 +51,19 @@ def _open(dataset_id: str, variable: str, lat: float, lon: float, start: date, e
         dataset_id=dataset_id,
         username=config.COPERNICUS_USERNAME,
         password=config.COPERNICUS_PASSWORD,
-        variables=[variable],
+        variables=variables,
         minimum_latitude=lat - BOX, maximum_latitude=lat + BOX,
         minimum_longitude=lon - BOX, maximum_longitude=lon + BOX,
         start_datetime=f"{start.isoformat()}T00:00:00",
         end_datetime=f"{end.isoformat()}T23:59:59",
     )
-    da = ds[variable]
-    if "depth" in da.dims:  # modèle 3D : on garde la surface
-        da = da.isel(depth=0)
-    return da.load()
+    out = {}
+    for variable in variables:
+        da = ds[variable]
+        if "depth" in da.dims:  # modèle 3D : on garde la surface
+            da = da.isel(depth=0)
+        out[variable] = da.load()
+    return out
 
 
 def _daily_values(da, lat: float, lon: float) -> dict:
@@ -88,8 +93,9 @@ def fetch_kd490_forecast(lat: float, lon: float, start: date, days: int) -> dict
     """Kd490 prévu par jour {AAAA-MM-JJ: valeur}."""
     key = f"vis:forecast:{round(lat, 2)}:{round(lon, 2)}:{start.isoformat()}:{days}"
     return _cached(key, lambda: _daily_values(
-        _open(config.COPERNICUS_FORECAST_DATASET, config.COPERNICUS_FORECAST_VARIABLE,
-              lat, lon, start, start + timedelta(days=days - 1)), lat, lon))
+        _open(config.COPERNICUS_FORECAST_DATASET, [config.COPERNICUS_FORECAST_VARIABLE],
+              lat, lon, start, start + timedelta(days=days - 1))[config.COPERNICUS_FORECAST_VARIABLE],
+        lat, lon))
 
 
 def fetch_satellite(lat: float, lon: float, today: date) -> dict | None:
@@ -98,8 +104,9 @@ def fetch_satellite(lat: float, lon: float, today: date) -> dict | None:
 
     def fetch():
         start = today - timedelta(days=6)
-        zsd = _daily_values(_open(config.COPERNICUS_SATELLITE_DATASET, "ZSD", lat, lon, start, today), lat, lon)
-        kd = _daily_values(_open(config.COPERNICUS_SATELLITE_DATASET, "KD490", lat, lon, start, today), lat, lon)
+        arrays = _open(config.COPERNICUS_SATELLITE_DATASET, ["ZSD", "KD490"], lat, lon, start, today)
+        zsd = _daily_values(arrays["ZSD"], lat, lon)
+        kd = _daily_values(arrays["KD490"], lat, lon)
         days = sorted(set(zsd) | set(kd))
         if not days:
             return {}
@@ -172,9 +179,12 @@ def enrich_report(report: dict, lat: float, lon: float) -> dict:
     if not is_configured() or not report.get("days"):
         return report
     start = date.fromisoformat(report["days"][0]["date"])
-    kd_forecast = fetch_kd490_forecast(lat, lon, start, len(report["days"]))
-    satellite = fetch_satellite(lat, lon, start)
-    rain = fetch_recent_rain(lat, lon, report["timezone"])
+    # Les trois sources sont indépendantes : on les interroge en même temps (surtout Copernicus, lent).
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        f_kd = pool.submit(fetch_kd490_forecast, lat, lon, start, len(report["days"]))
+        f_sat = pool.submit(fetch_satellite, lat, lon, start)
+        f_rain = pool.submit(fetch_recent_rain, lat, lon, report["timezone"])
+        kd_forecast, satellite, rain = f_kd.result(), f_sat.result(), f_rain.result()
     if not kd_forecast and not satellite:
         return report
     for day in report["days"]:

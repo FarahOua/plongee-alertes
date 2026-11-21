@@ -240,6 +240,8 @@ def _facts(day: dict) -> str:
     vis = day.get("visibility") or {}
     if vis.get("range"):
         rows.append(("Visibilité", vis["level"]))
+    elif day.get("visibility_pending"):
+        rows.append(("Visibilité", "en cours de calcul…"))
     body = "".join(f"<div><dt>{esc(k)}</dt><dd>{esc(v)}</dd></div>" for k, v in rows)
     why = vis.get("reasons")
     return f'<dl class="facts">{body}</dl>' + (f'<p class="why">{esc("; ".join(why))}</p>' if why else "")

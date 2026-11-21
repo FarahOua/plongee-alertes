@@ -37,6 +37,9 @@ state.setdefault("point", DEFAULT_POINT)
 state.setdefault("preview", None)
 state.setdefault("preview_at", 0.0)
 state.setdefault("btn_token", 0)
+state.setdefault("pending_see", False)
+state.setdefault("vis_pending", False)
+state.setdefault("responses", {})
 state.setdefault("job", None)
 state.setdefault("code_sent_to", None)
 
@@ -82,31 +85,8 @@ if not state.token and st.query_params.get("s"):
         st.query_params.pop("s", None)
 
 
-def server_preview(lat: float, lon: float):
-    """Aperçu calculé par le serveur. Renvoie (rapport, bridé) ; bridé=True si Open-Meteo bloque le serveur."""
-    try:
-        resp = requests.get(f"{BACKEND_URL}/preview", params={"lat": lat, "lon": lon}, timeout=90)
-    except requests.RequestException:
-        st.error(f"Backend injoignable ({BACKEND_URL}). Lance-le avec : flask --app backend.app run")
-        return None, False
-    if resp.status_code in WAKING:
-        st.warning(WAKING_MSG)
-        return None, False
-    try:
-        body = resp.json()
-    except ValueError:
-        st.error("Le serveur a renvoyé une erreur. Réessaie dans un instant.")
-        return None, False
-    if resp.status_code == 503 and body.get("code") == "rate_limited":
-        return None, True
-    if not resp.ok:
-        st.error(body.get("error", "Erreur du serveur."))
-        return None, False
-    return body, False
-
-
 def run_browser_job():
-    """Quand Open-Meteo bloque le serveur : le navigateur du visiteur fait les appels, le serveur assemble."""
+    """Les appels Open-Meteo partent du navigateur du visiteur (sa propre adresse IP, pas de quota partagé) ; le serveur assemble."""
     job = state.get("job")
     if not job:
         return
@@ -133,7 +113,9 @@ def run_browser_job():
     report = api("post", "/preview/build", json={"lat": job["lat"], "lon": job["lon"], "tz": plan["tz"],
                                                   "name": "", "responses": responses})
     state.job, state.preview, state.preview_at = None, report, time.time()
-    state.btn_token += 1         # fin du calcul : le bouton se réactive
+    state.responses = responses                 # resservent pour la pluie, au calcul de la visibilité
+    state.vis_pending = bool(report)            # les jours s'affichent d'abord ; la visibilité arrive ensuite
+    state.btn_token += 1                        # fin du calcul : le bouton se réactive
     st.rerun()
 
 
@@ -199,18 +181,16 @@ with left:
     st.markdown(f'<p class="where">{ui.coords(*state.point)} <span>point choisi</span></p>', unsafe_allow_html=True)
 
     if busy_button("Voir les conditions", token=state.btn_token, key="see"):
+        state.pending_see = True     # si la page est relancée en cours de route, le calcul reprend au tour suivant
+    if state.pending_see:
+        state.pending_see = False
         fresh = state.preview and time.time() - state.preview_at < 300   # même point, résultat récent
-        limited = False
-        if not fresh:
-            with st.spinner("Les modèles répondent…"):
-                state.preview, limited = server_preview(state.point[0], state.point[1])
-            state.preview_at = time.time()
-        if limited:   # Open-Meteo bloque l'adresse IP du serveur : le navigateur prend le relais
+        if fresh:
+            state.btn_token += 1
+        else:
+            state.preview, state.vis_pending = None, False
             state.job = {"lat": state.point[0], "lon": state.point[1], "tz": None, "nonce": uuid.uuid4().hex[:8]}
-            state.preview = None
-            st.rerun()           # le navigateur prend le relais : le bouton reste grisé jusqu'au résultat
-        state.btn_token += 1     # fin du calcul : le bouton, grisé depuis le clic, se réactive
-        st.rerun()
+        st.rerun()           # sinon le navigateur prend la suite : le bouton reste grisé jusqu'au résultat
 
     run_browser_job()
 
@@ -222,6 +202,8 @@ with left:
         st.markdown(f'<p class="hint">Vagues : {ui.esc(", ".join(report["models"]["waves"]) or "aucun modèle")}. '
                     f'Vent : {ui.esc(", ".join(report["models"]["wind"]) or "aucun modèle")}.</p>',
                     unsafe_allow_html=True)
+        for d in report["days"]:
+            d["visibility_pending"] = state.vis_pending and not d.get("visibility")
         st.markdown(ui.day_cards(report), unsafe_allow_html=True)
         first = next((d for d in report["days"] if d.get("per_model")), None)
         if first:
@@ -229,6 +211,22 @@ with left:
             st.markdown(f'<p class="hint">{ui.esc(first["label"])} à {ui.esc(first["per_model"]["time"])}. '
                         "La barre compare les instituts entre eux.</p>", unsafe_allow_html=True)
             st.markdown(ui.institutes_table(first), unsafe_allow_html=True)
+
+        if state.vis_pending:   # en dernier : tout le reste est déjà affiché pendant que Copernicus répond
+            with st.spinner("Estimation de la visibilité…"):
+                data = api("post", "/preview/visibility", json={
+                    "lat": state.point[0], "lon": state.point[1], "tz": report.get("timezone"),
+                    "days": [{"date": d["date"],
+                              "swell": ((d.get("summary") or {}).get("wave_height") or {}).get("median")}
+                             for d in report["days"]],
+                    "responses": state.responses})
+            state.vis_pending = False          # après l'appel : une page relancée en route le refait ; un échec ne boucle pas
+            if data and data.get("visibility"):
+                for d, v in zip(report["days"], data["visibility"]):
+                    if v:
+                        d["visibility"] = v
+                state.preview = report
+            st.rerun()
 
 # --- Alertes -----------------------------------------------------------------------------------------
 with right:

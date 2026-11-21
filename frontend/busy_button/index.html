@@ -26,6 +26,7 @@ b.addEventListener("click", () => {
   if (b.disabled) return;
   b.disabled = true;                       // grisé immédiatement : un second clic est impossible
   t.textContent = "Calcul en cours…";
+  setTimeout(() => { b.disabled = false; t.textContent = label; }, 150000);   // filet : jamais bloqué plus de 2 min 30
   send("setComponentValue", { value: Date.now() + "-" + Math.random().toString(36).slice(2, 8), dataType: "json" });
 });
 window.addEventListener("message", ev => {

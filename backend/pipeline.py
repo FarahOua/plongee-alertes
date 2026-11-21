@@ -47,11 +47,13 @@ def render_email(report: dict, text: dict, links: dict) -> tuple[str, str]:
     return html, plain
 
 
-def make_report(lat: float, lon: float, spot_name: str, tz_name: str | None = None) -> dict:
+def make_report(lat: float, lon: float, spot_name: str, tz_name: str | None = None,
+                with_visibility: bool = True) -> dict:
+    """Rapport complet. with_visibility=False : sans Copernicus (lent), la visibilité est demandée ensuite à part."""
     bundle = openmeteo.fetch_all(lat, lon, tz_name)
     now = local_now(bundle["timezone"])
     report = build_report(bundle, now.date(), spot_name, now_hour=now.hour)
-    return visibility.enrich_report(report, lat, lon)
+    return visibility.enrich_report(report, lat, lon) if with_visibility else report
 
 
 def process_subscription(sub: dict, email: str, report_date: date) -> dict:

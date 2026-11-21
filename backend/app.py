@@ -310,7 +310,8 @@ def create_app() -> Flask:
         responses = {k: v for k, v in (body.get("responses") or {}).items() if isinstance(v, dict)}
         token = openmeteo._BROWSER_RESPONSES.set(responses)
         try:
-            report = pipeline.make_report(lat, lon, str(body.get("name", ""))[:60], tz)
+            # Sans visibilité : les jours s'affichent tout de suite, Copernicus (lent) est demandé ensuite
+            report = pipeline.make_report(lat, lon, str(body.get("name", ""))[:60], tz, with_visibility=False)
         except openmeteo.OpenMeteoError as exc:
             return jsonify(error=f"{exc} Le point est peut-être à terre : clique plus au large."), 422
         finally:
@@ -318,6 +319,35 @@ def create_app() -> Flask:
         if not report["models"]["waves"]:
             report["warning"] = "Aucun modèle de vagues ici : le point est peut-être à terre."
         return jsonify(report)
+
+    @app.post("/preview/visibility")
+    def preview_visibility():
+        """Visibilité estimée (Copernicus), demandée après l'affichage des jours : {"visibility": [un élément par jour]}."""
+        body = request.get_json(silent=True) or {}
+        try:
+            lat, lon = float(body["lat"]), float(body["lon"])
+            days = [(date.fromisoformat(str(d["date"])), d.get("swell")) for d in body["days"]]
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Paramètres lat, lon et days requis.")
+        if not 1 <= len(days) <= 16:
+            raise ValueError("Nombre de jours invalide.")
+        tz = str(body.get("tz") or "")
+        _check_timezone(tz)
+        responses = {k: v for k, v in (body.get("responses") or {}).items() if isinstance(v, dict)}
+        swells = [float(s) if isinstance(s, (int, float)) else None for _, s in days]
+        minimal = {"timezone": tz, "days": [
+            {"date": d.isoformat(), "summary": {"wave_height": {"median": s}}} for (d, _), s in zip(days, swells)]}
+
+        def compute():
+            token = openmeteo._BROWSER_RESPONSES.set(responses)    # pluie récupérée par le navigateur
+            try:
+                return visibility.enrich_report(minimal, lat, lon)
+            finally:
+                openmeteo._BROWSER_RESPONSES.reset(token)
+
+        enriched = single_flight(("visibility", round(lat, 3), round(lon, 3), minimal["days"][0]["date"], len(days)),
+                                 compute)
+        return jsonify(visibility=[d.get("visibility") for d in enriched["days"]])
 
     # --- Pages publiques (liens du mail) -------------------------------------------
     @app.get("/reports/<int:sub_id>/<report_date>")

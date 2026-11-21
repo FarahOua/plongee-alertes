@@ -114,6 +114,7 @@ def run_browser_job():
     plan = api("get", "/preview/plan", params=params)
     if plan is None:
         state.job = None
+        state.btn_token += 1
         return
     result = om_fetch(plan["requests"], key=f"omf_{job['nonce']}_{plan['stage']}") if plan["requests"] else {"responses": {}}
     if result is None:
@@ -125,12 +126,14 @@ def run_browser_job():
         if not data or not data.get("timezone"):
             st.error("Impossible de joindre Open-Meteo depuis ton navigateur. Réessaie dans un instant.")
             state.job = None
+            state.btn_token += 1
             return
         state.job = {**job, "tz": data["timezone"]}
         st.rerun()
     report = api("post", "/preview/build", json={"lat": job["lat"], "lon": job["lon"], "tz": plan["tz"],
                                                   "name": "", "responses": responses})
     state.job, state.preview, state.preview_at = None, report, time.time()
+    state.btn_token += 1         # fin du calcul : le bouton se réactive
     st.rerun()
 
 
@@ -205,7 +208,8 @@ with left:
         if limited:   # Open-Meteo bloque l'adresse IP du serveur : le navigateur prend le relais
             state.job = {"lat": state.point[0], "lon": state.point[1], "tz": None, "nonce": uuid.uuid4().hex[:8]}
             state.preview = None
-        state.btn_token += 1     # le bouton, grisé depuis le clic, se réactive
+            st.rerun()           # le navigateur prend le relais : le bouton reste grisé jusqu'au résultat
+        state.btn_token += 1     # fin du calcul : le bouton, grisé depuis le clic, se réactive
         st.rerun()
 
     run_browser_job()
